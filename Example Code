@@ -1,0 +1,254 @@
+--// Services and Modules \\--
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+local TeleportService = game:GetService("TeleportService")
+local MemoryStoreService = game:GetService("MemoryStoreService")
+local Knit = require(ReplicatedStorage.Packages.Knit)
+
+--// Constants \\--
+
+local Tp_Request_SortedMap = MemoryStoreService:GetSortedMap("Tp_Requests")
+
+local Max_Game_Time = .5 * 60 * 60 -- one hour in seconds
+local Wait_Time = 5
+local Max_Players = {
+	Ranked = 5,
+}
+
+local PlaceId = {
+	Ranked = 17244976965,
+}
+
+--// Variables \\--
+
+local Parties = {}
+local PartyCodes = {}
+local GameModes = {
+	Ranked = {},
+}
+
+--// Setup \\--
+
+local self = Knit.CreateService{
+	Name = "MatchMaking",
+	Client = {
+		JoinQueue = Knit.CreateSignal();
+		LeaveQueue = Knit.CreateSignal();
+		MakeParty = Knit.CreateSignal();
+		JoinParty = Knit.CreateSignal();
+		LeaveParty = Knit.CreateSignal();
+		StartParty = Knit.CreateSignal();
+		ManipulateParty = Knit.CreateSignal();
+		GetParty = Knit.CreateSignal();
+	},
+}
+
+local function GetBracket(player)
+	return math.floor(player.leaderstats.RankValue.Value / 100)
+end
+
+local function GetAverageBracket(players)
+	local Sum = 0
+
+	for _, partyplayer in pairs(players) do
+		Sum += GetBracket(partyplayer)
+	end
+
+	return math.floor(Sum / #players)
+end
+
+local function Teleport(PlayersTeleported, gamemode, bracket)
+	local playerIds = {}
+	for _, partyplayer in pairs(PlayersTeleported) do table.insert(playerIds, partyplayer.UserId) end 
+	
+	local TeleportToPrivateServerSuccessed, TP_Data = pcall(function()
+		local TeleportOptions = Instance.new("TeleportOptions")
+		TeleportOptions.ShouldReserveServer = true
+		
+		return TeleportService:TeleportAsync(PlaceId[gamemode], PlayersTeleported, TeleportOptions)
+	end)
+	
+	if TeleportToPrivateServerSuccessed then
+		Tp_Request_SortedMap:SetAsync(tostring(TP_Data.PrivateServerId), {playerIds, bracket}, Max_Game_Time)
+	end
+end
+
+local function Update()
+	
+	while true do
+		task.wait(Wait_Time)
+		
+		print(GameModes)
+		
+		for GameMode, Brackets in pairs(GameModes) do
+			for Bracket, Queue in pairs(Brackets) do
+				local Max_Player = Max_Players[GameMode]
+				local PlayersTeleported = {}
+
+				for _, player in pairs(Queue) do
+					if #PlayersTeleported >= Max_Player then break end
+
+					table.insert(PlayersTeleported, player)
+				end
+
+				if #PlayersTeleported == Max_Player then
+					Teleport(PlayersTeleported, GameMode, Bracket)
+				end
+			end
+		end
+		
+	end
+	
+end
+
+local function IsPlayerInQueue(player)
+	for GameMode, Queue in pairs(GameModes) do
+		for i, Player in pairs(Queue) do
+			if Player == player then
+				return true, i, Queue
+			end
+		end
+	end
+	
+	return false
+end
+
+local function IsInParty(player)
+	for _, Party in pairs(Parties) do
+		for _, Player in pairs(Party.Players) do
+			if Player == player then 
+				return true, Party
+			end
+		end
+	end
+	
+	return false
+end
+
+local function SendAllplayers(Players, Party)
+	for _, player in pairs(if Players then Players else game.Players:GetPlayers()) do
+		if Party then
+			self.Client.GetParty:Fire(player, Party, PartyCodes[Party.Host])
+		else
+			self.Client.GetParty:Fire(player, Parties)
+		end
+	end
+end
+
+local function GetRandomCode()
+	local String = {}
+	for i = 1,3 do
+		String[i] = string.char(math.random(33, 90))
+	end
+
+	return math.random(1, 9)..String[1]..math.random(1, 9)..String[2]..math.random(1, 9)..String[3]
+end
+
+function self:KnitInit()
+	
+	game.Players.PlayerAdded:Connect(function(player)
+		
+		local LeaderStats = Instance.new("Folder")
+		LeaderStats.Parent = player
+		LeaderStats.Name = "leaderstats"
+		
+		local RankValue = Instance.new("NumberValue")
+		RankValue.Value = 100
+		RankValue.Name = "RankValue"
+		RankValue.Parent = LeaderStats
+		
+	end)
+	
+	self.Client.JoinQueue:Connect(function(player : Player, GameMode)
+		if IsInParty(player) then return end
+		if not GameMode then return end
+		
+		local Bracket = GetBracket(player)
+		
+		if not GameModes[GameMode][Bracket] then GameModes[GameMode][Bracket] = {} end
+		if table.find(GameModes[GameMode][Bracket], player) then return end
+		
+		table.insert(GameModes[GameMode][Bracket], player)
+	end)
+	
+	self.Client.LeaveQueue:Connect(function(player)
+		local inQueue, I, Queue = IsPlayerInQueue(player)
+		
+		if inQueue then table.remove(Queue, I) end
+	end)
+	
+	self.Client.MakeParty:Connect(function(player, Configurations)
+		if Parties[player] or not Configurations and IsPlayerInQueue(player) then return end
+		
+		Parties[player] = Configurations
+		Parties[player].Host = player
+		table.insert(Parties[player].Players, player)
+		
+		SendAllplayers()
+	end)
+	
+	self.Client.ManipulateParty:Connect(function(player, Configuration, Value)
+		local inparty, Party = IsInParty(player)
+		
+		if Party and Party.Host == player then
+			Party[Configuration] = Value
+			
+			if Configuration == "Public" then
+				PartyCodes[player] = GetRandomCode()
+			end
+		end
+		
+		SendAllplayers()
+	end)
+	
+	self.Client.JoinParty:Connect(function(player, Host, playerCode)
+		print(Parties[Host], Parties[player], #Parties[Host].Players,  Max_Players[Parties[Host].GameMode], Parties[Host].Public, PartyCodes[Host], playerCode)
+		
+		if not Parties[Host] then return end
+		if Parties[player] then return end
+		if #Parties[Host].Players >=  Max_Players[Parties[Host].GameMode]  then return end
+		if not Parties[Host].Public then if PartyCodes[Host] ~= playerCode then return end end
+		
+		table.insert(Parties[Host].Players, player)
+		SendAllplayers(Parties[Host].Players, Parties[Host])
+		
+		SendAllplayers()
+	end)
+	
+	self.Client.LeaveParty:Connect(function(player, Host)
+		if not Parties[Host] then return end
+		local Index = table.find(Parties[Host].Players, player)
+		
+		
+		if not Index then return end
+		
+		if player == Host then 
+			Parties[Host] = nil
+		else
+			table.remove(Parties[Host].Players, Index)
+		end
+		
+		SendAllplayers()
+	end)
+	
+	self.Client.StartParty:Connect(function(player)
+		if not Parties[player] then return end
+		local Max_Player = Max_Players[Parties[player].GameMode]
+		
+		
+		Teleport(Parties[player].Players, Parties[player].GameMode, GetAverageBracket(Parties[player].Players))
+		
+		SendAllplayers()
+	end)
+	
+	self.Client.GetParty:Connect(function(player)
+		local Isinparty, party = IsInParty(player)
+		
+		if Isinparty then SendAllplayers(party.Players, party) end
+	end)
+	
+	task.spawn(Update)
+end 
+
+return self
