@@ -1,0 +1,139 @@
+local Knit = require(game.ReplicatedStorage.Packages.Knit)
+
+Knit.Start({ServicePromises = true}):catch(warn)
+
+local MatchMakingService = Knit.GetService("MatchMaking")
+local QueueButton = script.ScreenGui.Ranked.Queue
+local LeaveButton = script.ScreenGui.Ranked.Leave
+local player = game.Players.LocalPlayer
+
+local DefaultParty = {
+	Players = {};
+	Public = true;
+	MaxPlayers = 5;
+	GameMode = "Ranked";
+}
+local PartyFrame = script.ScreenGui.Parties.ScrollingFrame
+local InPartyFrame = script.ScreenGui.InParty.ScrollingFrame
+
+local Party
+local InQueue = false
+
+QueueButton.Activated:Connect(function()
+	MatchMakingService.JoinQueue:Fire("Ranked")
+	InQueue = true
+end)
+
+LeaveButton.Activated:Connect(function()
+	MatchMakingService.LeaveQueue:Fire()
+	InQueue = false
+end)
+
+local function UpdatePartyFrame(Parties)
+	
+	for _, frame in pairs(PartyFrame:GetChildren()) do
+		if frame.Name == "Template" then continue end
+		if frame:IsA("Frame") then frame:Destroy() end
+	end
+	
+	Party = nil
+	
+	for _, Properties in pairs(Parties) do
+		
+		local Template = PartyFrame.Template:Clone()
+		Template.Parent = PartyFrame
+		Template.CodeTextBox.Visible = not Properties.Public
+		Template.Name = Properties.Host.Name
+		Template.Visible = true
+		
+		Template.playerImage.Image = game.Players:GetUserThumbnailAsync(Properties.Host.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size420x420)
+		Template.PlayerCount.Text = #Properties.Players.." / "..Properties.MaxPlayers
+		Template.playerName.Text = Properties.Host.Name
+		
+		Template.JoinButton.Activated:Connect(function()
+			if Template then
+				MatchMakingService.JoinParty:Fire(Properties.Host, Template.CodeTextBox.Text)
+			end
+		end)
+		
+		for _, Partyplayer in pairs(Properties.Players) do
+			if Partyplayer == player then 
+				Party = Properties
+			end
+		end
+	end
+end
+
+local function UpdateCurrentParty()
+	
+	for _, frame in pairs(InPartyFrame:GetChildren()) do
+		if frame.Name == "Template" then continue end
+		if frame:IsA("Frame") then frame:Destroy() end
+	end
+	
+	for _, Partyplayer in pairs(Party.Players) do
+		local Template = InPartyFrame.Template:Clone()
+		Template.Parent = InPartyFrame
+		Template.Name = Partyplayer.Name
+		Template.Visible = true
+
+		Template.playerImage.Image = game.Players:GetUserThumbnailAsync(Partyplayer.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size420x420)
+		Template.playerName.Text = Partyplayer.Name
+	end
+end
+
+local function UpdateParty(party, Code)
+	Party = party
+	
+	InPartyFrame.Parent.Code.Text = Code
+	InPartyFrame.Parent.Code.Visible = not Party.Public
+	InPartyFrame.Parent.Public.Text = if Party.Public then "Public" else "Private"
+end
+
+MatchMakingService.GetParty:Connect(function(Parties, Code)
+	if Code then UpdateParty(Parties, Code) return end
+	UpdatePartyFrame(Parties)
+	
+	if Party then
+		
+		PartyFrame.Parent.Visible = false
+		script.ScreenGui.Ranked.Visible = false
+		InPartyFrame.Parent.Visible = true
+		
+		UpdateCurrentParty()
+	else
+		
+		PartyFrame.Parent.Visible = true
+		script.ScreenGui.Ranked.Visible = true
+		InPartyFrame.Parent.Visible = false
+	end
+end)
+
+PartyFrame.Parent.Create.Activated:Connect(function()
+	MatchMakingService.MakeParty:Fire(DefaultParty)
+end)
+
+InPartyFrame.Parent.Ranked.Activated:Connect(function()
+	if not Party then return end
+	MatchMakingService.ManipulateParty:Fire("GameMode", "Ranked")
+end)
+
+InPartyFrame.Parent.Leave.Activated:Connect(function()
+	if not Party then return end
+	MatchMakingService.LeaveParty:Fire(Party.Host)
+end)
+
+InPartyFrame.Parent.Public.Activated:Connect(function()
+	if not Party then return end
+	if Party.Host == player then 
+		MatchMakingService.ManipulateParty:Fire("Public", not Party.Public)
+		
+		MatchMakingService.GetParty:Fire()
+	end
+end)
+
+InPartyFrame.Parent.Start.Activated:Connect(function()
+	if Party then 
+		MatchMakingService.StartParty:Fire()
+	end
+end)
